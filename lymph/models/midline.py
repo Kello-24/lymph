@@ -112,6 +112,7 @@ class Midline(
         self.is_symmetric = is_symmetric
         self.use_mixing = use_mixing
         self.use_cohorts = use_cohorts
+        self.use_midext_evo = use_midext_evo
 
         if use_cohorts:
             # Ext1 defines the model for ispilateral tumor spread parameters
@@ -179,7 +180,8 @@ class Midline(
             else:
                 self.mixing_param = 0.0
 
-        self.midext_prob = 0.0
+        if self.use_midext_evo:
+            self.midext_prob = 0.0
 
         if self.use_cohorts:
             ext_children = {
@@ -437,7 +439,9 @@ class Midline(
         params = {}
         params.update(self.get_spread_params(as_flat=as_flat))
         params.update(self.get_distribution_params(as_flat=as_flat))
-        params["midext_prob"] = self.midext_prob
+
+        if self.use_midext_evo:
+            params["midext_prob"] = self.midext_prob
 
         if as_flat or not as_dict:
             params = utils.flatten(params)
@@ -509,7 +513,7 @@ class Midline(
                             mixing_param * ipsi_param
                             + (1.0 - mixing_param) * noext_contra_param
                         )
-                        print(f"Setting ext{coh} contra params: {ext_contra_kwargs}")
+
                     getattr(self, f"ext{coh}").contra.set_tumor_spread_params(**ext_contra_kwargs)
             else:  
                 mixing_param, args = utils.popfirst(args)
@@ -617,7 +621,8 @@ class Midline(
         """
         last_param_idx = self.get_num_dims() - 1
         before, last, after = utils.popat(args, idx=last_param_idx)
-        self.midext_prob = kwargs.get("midext_prob", last) or self.midext_prob
+        if self.use_midext_evo:
+            self.midext_prob = kwargs.get("midext_prob", last) or self.midext_prob
         args = self.set_spread_params(*(before + after), **kwargs)
         return self.set_distribution_params(*args, **kwargs)
 
