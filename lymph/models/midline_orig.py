@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 
 EXT_COL = ("tumor", "1", "extension")
 CENTRAL_COL = ("tumor", "1", "central")
-EXT_COH_COL = ("tumor", "1", "ext_coh")
 
 
-class Midline(
+
+class Midline_orig(
     diagnosis_times.Composite,
     modalities.Composite,
     types.Model,
@@ -54,7 +54,6 @@ class Midline(
         graph_dict: types.GraphDictType,
         is_symmetric: dict[str, bool] | None = None,
         use_mixing: bool = True,
-        use_cohorts: bool = False,
         use_central: bool = False,
         use_midext_evo: bool = True,
         named_params: Sequence[str] | None = None,
@@ -98,8 +97,6 @@ class Midline(
             a central/symmetric tumor, and (possibly) one for the case of unknown
             midline extension status.
         """
-
-
         is_symmetric = is_symmetric or {}
         is_symmetric["tumor_spread"] = is_symmetric.get("tumor_spread", False)
         is_symmetric["lnl_spread"] = is_symmetric.get("lnl_spread", True)
@@ -110,35 +107,12 @@ class Midline(
                 "Bilateral class.",
             )
         self.is_symmetric = is_symmetric
-        self.use_mixing = use_mixing
-        self.use_cohorts = use_cohorts
 
-        if use_cohorts:
-            # Ext1 defines the model for ispilateral tumor spread parameters
-            # as well as the ipsilateral LNL spread parameters
-            self.ext1 = models.Bilateral(
-                graph_dict=graph_dict,
-                uni_kwargs=uni_kwargs,
-                is_symmetric=self.is_symmetric,
-            )
-            self.ext2 = models.Bilateral(
-                graph_dict=graph_dict,
-                uni_kwargs=uni_kwargs,
-                is_symmetric=self.is_symmetric,
-            )   
-            self.ext3 = models.Bilateral(
-                graph_dict=graph_dict,
-                uni_kwargs=uni_kwargs,
-                is_symmetric=self.is_symmetric,
-            )
-
-        else: 
-            self.ext = models.Bilateral(
-                graph_dict=graph_dict,
-                uni_kwargs=uni_kwargs,
-                is_symmetric=self.is_symmetric,
-            )
-
+        self.ext = models.Bilateral(
+            graph_dict=graph_dict,
+            uni_kwargs=uni_kwargs,
+            is_symmetric=self.is_symmetric,
+        )
         self.noext = models.Bilateral(
             graph_dict=graph_dict,
             uni_kwargs=uni_kwargs,
@@ -173,29 +147,15 @@ class Midline(
             )
             other_children["unknown"] = self.unknown
 
-        if self.use_mixing:
-            if self.use_cohorts:
-                self.mixing_params = {coh: 0.0 for coh in [1, 2, 3]}
-            else:
-                self.mixing_param = 0.0
+        if use_mixing:
+            self.mixing_param = 0.0
 
         self.midext_prob = 0.0
-
-        if self.use_cohorts:
-            ext_children = {
-                "ext1": self.ext1,
-                "ext2": self.ext2,
-                "ext3": self.ext3,
-            }
-        else:
-            ext_children = {
-                "ext": self.ext,
-            }
 
         diagnosis_times.Composite.__init__(
             self,
             distribution_children={
-                **ext_children,
+                "ext": self.ext,
                 "noext": self.noext,
                 **other_children,
             },
@@ -203,11 +163,7 @@ class Midline(
         )
         modalities.Composite.__init__(
             self,
-            modality_children={
-                **ext_children,
-                "noext": self.noext,
-                **other_children,
-            },
+            modality_children={"ext": self.ext, "noext": self.noext, **other_children},
             is_modality_leaf=False,
         )
 
@@ -268,27 +224,9 @@ class Midline(
         self._mixing_param = value
 
     @property
-    def mixing_params(self) -> dict[int, float]:
-        """Return the mixing parameters for each cohort."""
-        if hasattr(self, "_mixing_params"):
-            return self._mixing_params
-        return {}
-    
-    @mixing_params.setter
-    def mixing_params(self, value: dict[int, float]):
-        if not all(0.0 <= v <= 1.0 for v in value.values()):
-            raise ValueError("All mixing parameters must be in the range [0, 1].")
-        self._mixing_params = value
-
-    # @property
-    # def use_mixing(self) -> bool:
-    #     """Return whether the model uses a mixing parameter."""
-    #     return hasattr(self, "_mixing_param")
-    
-    # @property
-    # def use_cohorts(self) -> bool:
-    #     """Return whether the model uses cohorts."""
-    #     return hasattr(self, "_mixing_params")
+    def use_mixing(self) -> bool:
+        """Return whether the model uses a mixing parameter."""
+        return hasattr(self, "_mixing_param")
 
     @property
     def use_central(self) -> bool:
@@ -329,22 +267,14 @@ class Midline(
         contralateral params for the cases of present and absent midline extension.
         """
         params = {}
+        params["ipsi"] = self.ext.ipsi.get_tumor_spread_params(as_flat=as_flat)
+
         if self.use_mixing:
-            # Noext defined for both only use_mixing and use_miixing and use_cohorts
             params["contra"] = self.noext.contra.get_tumor_spread_params(
                 as_flat=as_flat,
             )
-            if self.use_cohorts:
-                # Only take ipsilateral tumor spread params from ext1
-                params["ipsi"] = self.ext1.ipsi.get_tumor_spread_params(as_flat=as_flat)
-                # Take mixing params from each cohort
-                for coh in [1, 2, 3]:
-                    params[f"mixing{coh}"] = self.mixing_params[coh]
-            else:
-                params["ipsi"] = self.ext.ipsi.get_tumor_spread_params(as_flat=as_flat)
-                params["mixing"] = self.mixing_param
+            params["mixing"] = self.mixing_param
         else:
-            params["ipsi"] = self.ext.ipsi.get_tumor_spread_params(as_flat=as_flat)
             params["noext"] = {
                 "contra": self.noext.contra.get_tumor_spread_params(as_flat=as_flat),
             }
@@ -368,13 +298,7 @@ class Midline(
         may contain only one set of spread parameters (if ``True``) or one for the ipsi-
         and one for the contralateral side (if ``False``).
         """
-        
-        if self.use_cohorts:
-        # Get the ln spread parameters from the same ext1 for all cohorts
-            ext_lnl_params = self.ext1.get_lnl_spread_params(as_flat=False)
-        else:
-            ext_lnl_params = self.ext.get_lnl_spread_params(as_flat=False)
-
+        ext_lnl_params = self.ext.get_lnl_spread_params(as_flat=False)
         noext_lnl_params = self.noext.get_lnl_spread_params(as_flat=False)
 
         if ext_lnl_params != noext_lnl_params:
@@ -458,28 +382,17 @@ class Midline(
         :py:meth:`get_tumor_spread_params` method returns for an insight in what you
         can provide.
         """
-        if self.use_cohorts:
-            kwargs, global_kwargs = utils.unflatten_and_split(
-                kwargs,
-                expected_keys=["ipsi", "noext", "ext1", "ext2", "ext3", "contra"],
-            )
-        else:
-            kwargs, global_kwargs = utils.unflatten_and_split(
-                kwargs,
-                expected_keys=["ipsi", "noext", "ext", "contra"],
-            )
+        kwargs, global_kwargs = utils.unflatten_and_split(
+            kwargs,
+            expected_keys=["ipsi", "noext", "ext", "contra"],
+        )
 
         # first, take care of ipsilateral tumor spread (same for all models)
         ipsi_kwargs = global_kwargs.copy()
         ipsi_kwargs.update(kwargs.get("ipsi", {}))
         if self.use_central:
             self.central.set_spread_params(*args, **ipsi_kwargs)
-        if self.use_cohorts:
-            self.ext1.ipsi.set_tumor_spread_params(*args, **ipsi_kwargs)
-            self.ext2.ipsi.set_tumor_spread_params(*args, **ipsi_kwargs)
-            self.ext3.ipsi.set_tumor_spread_params(*args, **ipsi_kwargs)
-        else:
-            self.ext.ipsi.set_tumor_spread_params(*args, **ipsi_kwargs)
+        self.ext.ipsi.set_tumor_spread_params(*args, **ipsi_kwargs)
         args = self.noext.ipsi.set_tumor_spread_params(*args, **ipsi_kwargs)
 
         # then, take care of contralateral tumor spread
@@ -487,48 +400,23 @@ class Midline(
             contra_kwargs = global_kwargs.copy()
             contra_kwargs.update(kwargs.get("contra", {}))
             args = self.noext.contra.set_tumor_spread_params(*args, **contra_kwargs)
-            if self.use_cohorts:
-                for coh in [1, 2, 3]:
-                    self.mixing_params[coh], args = utils.popfirst(args)
-                    mixing_param = (
-                        global_kwargs.get(f"mixing{coh}", self.mixing_params[coh])
-                        or self.mixing_params[coh]
-                    )
-                    self.mixing_params[coh] = global_kwargs.get(f"mixing{coh}", mixing_param)
+            mixing_param, args = utils.popfirst(args)
+            mixing_param = (
+                global_kwargs.get("mixing", mixing_param) or self.mixing_param
+            )
+            self.mixing_param = global_kwargs.get("mixing", mixing_param)
 
-                    ext_contra_kwargs = {}
-                    # Set the contra tumor spread parameters for each cohort 
-                    # using the defined ispi (ext1) and noext (noext) params
-                    # and the cohort specific mixing parameter
-                    for (key, ipsi_param), noext_contra_param in zip(
-                        self.ext1.ipsi.get_tumor_spread_params().items(),
-                        self.noext.contra.get_tumor_spread_params().values(),
-                        strict=False,
-                    ):
-                        ext_contra_kwargs[key] = (
-                            mixing_param * ipsi_param
-                            + (1.0 - mixing_param) * noext_contra_param
-                        )
-                        print(f"Setting ext{coh} contra params: {ext_contra_kwargs}")
-                    getattr(self, f"ext{coh}").contra.set_tumor_spread_params(**ext_contra_kwargs)
-            else:  
-                mixing_param, args = utils.popfirst(args)
-                mixing_param = (
-                    global_kwargs.get("mixing", mixing_param) or self.mixing_param
+            ext_contra_kwargs = {}
+            for (key, ipsi_param), noext_contra_param in zip(
+                self.ext.ipsi.get_tumor_spread_params().items(),
+                self.noext.contra.get_tumor_spread_params().values(),
+                strict=False,
+            ):
+                ext_contra_kwargs[key] = (
+                    self.mixing_param * ipsi_param
+                    + (1.0 - self.mixing_param) * noext_contra_param
                 )
-                self.mixing_param = global_kwargs.get("mixing", mixing_param)
-
-                ext_contra_kwargs = {}
-                for (key, ipsi_param), noext_contra_param in zip(
-                    self.ext.ipsi.get_tumor_spread_params().items(),
-                    self.noext.contra.get_tumor_spread_params().values(),
-                    strict=False,
-                ):
-                    ext_contra_kwargs[key] = (
-                        self.mixing_param * ipsi_param
-                        + (1.0 - self.mixing_param) * noext_contra_param
-                    )
-                self.ext.contra.set_tumor_spread_params(**ext_contra_kwargs)
+            self.ext.contra.set_tumor_spread_params(**ext_contra_kwargs)
 
         else:
             noext_contra_kwargs = global_kwargs.copy()
@@ -543,7 +431,6 @@ class Midline(
             args = self.ext.contra.set_tumor_spread_params(*args, **ext_contra_kwargs)
 
         return args
-    
 
     def set_lnl_spread_params(self, *args: float, **kwargs: float) -> Iterable[float]:
         """Set the LNL spread parameters of the midline model.
@@ -553,16 +440,10 @@ class Midline(
         three instances of :py:class:`~.Bilateral` depending on the value of the
         ``use_central`` attribute.
         """
-        if self.use_cohorts:
-            kwargs, global_kwargs = utils.unflatten_and_split(
-                kwargs,
-                expected_keys=["ipsi", "noext", "ext1", "ext2", "ext3", "contra"],
-            )
-        else:
-            kwargs, global_kwargs = utils.unflatten_and_split(
-                kwargs,
-                expected_keys=["ipsi", "noext", "ext", "contra"],
-            )
+        kwargs, global_kwargs = utils.unflatten_and_split(
+            kwargs,
+            expected_keys=["ipsi", "noext", "ext", "contra"],
+        )
         ipsi_kwargs = global_kwargs.copy()
         ipsi_kwargs.update(kwargs.get("ipsi", {}))
 
@@ -570,16 +451,8 @@ class Midline(
             if self.use_central:
                 self.central.ipsi.set_lnl_spread_params(*args, **global_kwargs)
                 self.central.contra.set_lnl_spread_params(*args, **global_kwargs)
-            if self.use_cohorts:
-                self.ext1.ipsi.set_lnl_spread_params(*args, **global_kwargs)
-                self.ext2.ipsi.set_lnl_spread_params(*args, **global_kwargs)
-                self.ext3.ipsi.set_lnl_spread_params(*args, **global_kwargs)
-                self.ext1.contra.set_lnl_spread_params(*args, **global_kwargs)
-                self.ext2.contra.set_lnl_spread_params(*args, **global_kwargs)
-                self.ext3.contra.set_lnl_spread_params(*args, **global_kwargs)
-            else:
-                self.ext.ipsi.set_lnl_spread_params(*args, **global_kwargs)
-                self.ext.contra.set_lnl_spread_params(*args, **global_kwargs)
+            self.ext.ipsi.set_lnl_spread_params(*args, **global_kwargs)
+            self.ext.contra.set_lnl_spread_params(*args, **global_kwargs)
             self.noext.ipsi.set_lnl_spread_params(*args, **global_kwargs)
             args = self.noext.contra.set_lnl_spread_params(*args, **global_kwargs)
 
@@ -644,37 +517,26 @@ class Midline(
         The split data is sent to the :py:meth:`.Bilateral.load_patient_data` method of
         the respective models.
         """
-        if self.use_cohorts:
-            is_lateralized = patient_data[EXT_COH_COL] == 0 
-            ext_coh1 = patient_data[EXT_COH_COL] == 1  
-            ext_coh2 = patient_data[EXT_COH_COL] == 2  
-            ext_coh3 = patient_data[EXT_COH_COL] == 3 
-            self.noext.load_patient_data(patient_data[is_lateralized], mapping)
-            self.ext1.load_patient_data(patient_data[ext_coh1], mapping)
-            self.ext2.load_patient_data(patient_data[ext_coh2], mapping)
-            self.ext3.load_patient_data(patient_data[ext_coh3], mapping)
-        
-        else:
-            # pylint: disable=singleton-comparison
-            is_lateralized = patient_data[EXT_COL] == False  # noqa: E712
-            has_extension = patient_data[EXT_COL] == True  # noqa: E712
-            is_unknown = patient_data[EXT_COL].isna()
-            self.noext.load_patient_data(patient_data[is_lateralized], mapping)
+        # pylint: disable=singleton-comparison
+        is_lateralized = patient_data[EXT_COL] == False  # noqa: E712
+        has_extension = patient_data[EXT_COL] == True  # noqa: E712
+        is_unknown = patient_data[EXT_COL].isna()
+        self.noext.load_patient_data(patient_data[is_lateralized], mapping)
 
-            if self.use_central:
-                is_central = patient_data[CENTRAL_COL] == True  # noqa: E712
-                has_extension = has_extension & ~is_central
-                self.central.load_patient_data(patient_data[is_central], mapping)
+        if self.use_central:
+            is_central = patient_data[CENTRAL_COL] == True  # noqa: E712
+            has_extension = has_extension & ~is_central
+            self.central.load_patient_data(patient_data[is_central], mapping)
 
-            self.ext.load_patient_data(patient_data[has_extension], mapping)
+        self.ext.load_patient_data(patient_data[has_extension], mapping)
 
-            if self.marginalize_unknown and is_unknown.sum() > 0:
-                self.unknown.load_patient_data(patient_data[is_unknown], mapping)
-            elif is_unknown.sum() > 0:
-                warnings.warn(
-                    f"Discarding {is_unknown.sum()} patients where midline extension "
-                    "is unknown.",
-                )
+        if self.marginalize_unknown and is_unknown.sum() > 0:
+            self.unknown.load_patient_data(patient_data[is_unknown], mapping)
+        elif is_unknown.sum() > 0:
+            warnings.warn(
+                f"Discarding {is_unknown.sum()} patients where midline extension "
+                "is unknown.",
+            )
 
     def midext_evo(self) -> np.ndarray:
         """Evolve only the state of the midline extension."""
@@ -754,37 +616,16 @@ class Midline(
         """
         if central:
             return self.central.state_dist(t_stage, mode)
-        if self.use_cohorts:
-            # Use ext1 for ipsilateral state dist evolution
-            ipsi_dist_evo = self.ext1.ipsi.state_dist_evo()
-        else:
-            ipsi_dist_evo = self.ext.ipsi.state_dist_evo()
 
-        if self.use_cohorts:
-            # Do not use contra_state_dist_evo() for midext_evo
-            noext_contra_dist_evo = self.noext.contra.state_dist_evo()
-            ext_contra_dist_evo1 = self.ext1.contra.state_dist_evo()
-            ext_contra_dist_evo2 = self.ext2.contra.state_dist_evo()
-            ext_contra_dist_evo3 = self.ext3.contra.state_dist_evo()
-            # Compute the evolution of the contralateral state distribution for each cohort
-            if mode == "HMM":
-                result = np.empty(shape=(2, ipsi_dist_evo.shape[1], ipsi_dist_evo.shape[1]))
-                time_marg_matrix = np.diag(self.get_distribution(t_stage).pmf)
-                result[0] = ipsi_dist_evo.T @ time_marg_matrix @ noext_contra_dist_evo
-                result[1] = ipsi_dist_evo.T @ time_marg_matrix @ ext_contra_dist_evo1
-                result[2] = ipsi_dist_evo.T @ time_marg_matrix @ ext_contra_dist_evo2
-                result[3] = ipsi_dist_evo.T @ time_marg_matrix @ ext_contra_dist_evo3
-                return result
-        
-        else:
-            noext_contra_dist_evo, ext_contra_dist_evo = self.contra_state_dist_evo()
+        ipsi_dist_evo = self.ext.ipsi.state_dist_evo()
+        noext_contra_dist_evo, ext_contra_dist_evo = self.contra_state_dist_evo()
 
-            if mode == "HMM":
-                result = np.empty(shape=(2, ipsi_dist_evo.shape[1], ipsi_dist_evo.shape[1]))
-                time_marg_matrix = np.diag(self.get_distribution(t_stage).pmf)
-                result[0] = ipsi_dist_evo.T @ time_marg_matrix @ noext_contra_dist_evo
-                result[1] = ipsi_dist_evo.T @ time_marg_matrix @ ext_contra_dist_evo
-                return result
+        if mode == "HMM":
+            result = np.empty(shape=(2, ipsi_dist_evo.shape[1], ipsi_dist_evo.shape[1]))
+            time_marg_matrix = np.diag(self.get_distribution(t_stage).pmf)
+            result[0] = ipsi_dist_evo.T @ time_marg_matrix @ noext_contra_dist_evo
+            result[1] = ipsi_dist_evo.T @ time_marg_matrix @ ext_contra_dist_evo
+            return result
 
         raise NotImplementedError("Only HMM mode is supported as of now.")
 
@@ -794,7 +635,6 @@ class Midline(
         t_stage: str = "early",
         mode: Literal["HMM", "BN"] = "HMM",
         central: bool = False,
-        cohort: int | None = None,
     ) -> np.ndarray:
         """Compute the joint distribution over the ipsi- & contralateral observations.
 
@@ -816,25 +656,17 @@ class Midline(
                 mode=mode,
                 central=central,
             )
-        if self.use_cohorts:
-            obs_dist = [
-                self.noext.obs_dist(given_state_dist=given_state_dist[0]),
-                self.ext1.obs_dist(given_state_dist=given_state_dist[1]),
-                self.ext2.obs_dist(given_state_dist=given_state_dist[2]),
-                self.ext3.obs_dist(given_state_dist=given_state_dist[3]),
-            ]
-            return np.stack(obs_dist)
-        else: 
-            if given_state_dist.ndim == 2:
-                return self.ext.obs_dist(given_state_dist=given_state_dist)
 
-            # Theoretically, we also have a sensitivity and specificity for observing
-            # midline extension, but realisitically, these values will just be 1.
-            obs_dist = [
-                self.ext.obs_dist(given_state_dist=given_state_dist[0]),
-                self.ext.obs_dist(given_state_dist=given_state_dist[1]),
-            ]
-            return np.stack(obs_dist)
+        if given_state_dist.ndim == 2:
+            return self.ext.obs_dist(given_state_dist=given_state_dist)
+
+        # Theoretically, we also have a sensitivity and specificity for observing
+        # midline extension, but realisitically, these values will just be 1.
+        obs_dist = [
+            self.ext.obs_dist(given_state_dist=given_state_dist[0]),
+            self.ext.obs_dist(given_state_dist=given_state_dist[1]),
+        ]
+        return np.stack(obs_dist)
 
     def _hmm_likelihood(
         self,
@@ -844,18 +676,9 @@ class Midline(
         """Compute the likelihood of the stored data under the hidden Markov model."""
         llh = 0.0 if log else 1.0
 
-        if self.use_cohorts:
-            cases = ["ext1", "ext2", "ext3", "noext"]
-            contra_dist_evo = {}
-            ipsi_dist_evo = {}
-            ipsi_dist_evo = self.ext1.ipsi.state_dist_evo()
-            for case in cases:
-                contra_dist_evo[case] = getattr(self, case).contra.state_dist_evo()
-        else:
-            cases = ["ext", "noext"]
-            ipsi_dist_evo = self.ext.ipsi.state_dist_evo()
-            contra_dist_evo = {}
-            contra_dist_evo["noext"], contra_dist_evo["ext"] = self.contra_state_dist_evo()
+        ipsi_dist_evo = self.ext.ipsi.state_dist_evo()
+        contra_dist_evo = {}
+        contra_dist_evo["noext"], contra_dist_evo["ext"] = self.contra_state_dist_evo()
 
         t_stages = self.t_stages if for_t_stage is None else [for_t_stage]
         for stage in t_stages:
@@ -863,7 +686,7 @@ class Midline(
             num_states = ipsi_dist_evo.shape[1]
             marg_joint_state_dist = np.zeros(shape=(num_states, num_states))
             # see the `Bilateral` model for why this is done in this way.
-            for case in cases:
+            for case in ["ext", "noext"]:
                 joint_state_dist = (
                     ipsi_dist_evo.T @ diag_time_matrix @ contra_dist_evo[case]
                 )
@@ -979,7 +802,6 @@ class Midline(
             raise ValueError("The `given_state_dist` must be 2D for the central model.")
 
         if midext is None:
-            # Sum over all midline extension states noext, ext1, ext2, ext3
             given_state_dist = np.sum(given_state_dist, axis=0)
         else:
             given_state_dist = given_state_dist[int(midext)]
@@ -1031,6 +853,7 @@ class Midline(
             # I think I don't need to normalize here, since I am not computing a
             # probability of something *given* midext, but only sum up all states that
             # match the disease state of interest (which includes the midext status).
+
         return self.ext.marginalize(
             involvement=involvement,
             given_state_dist=given_state_dist,
@@ -1085,8 +908,6 @@ class Midline(
             given_state_dist=posterior_state_dist,
             midext=midext,
         )
-
-
 
     def draw_patients(
         self,
@@ -1179,4 +1000,3 @@ class Midline(
         dataset["patient", "#", "diagnosis_time"] = drawn_diag_times
 
         return dataset
-
