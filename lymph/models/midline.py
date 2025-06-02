@@ -146,7 +146,6 @@ class Midline(
             is_symmetric=self.is_symmetric,
         )
 
-        self.use_midext_evo = use_midext_evo
         if self.use_midext_evo and use_central:
             raise ValueError(
                 "Evolution to central tumor not yet implemented. Choose to use either "
@@ -780,7 +779,15 @@ class Midline(
                 result[2] = ipsi_dist_evo.T @ time_marg_matrix @ ext_contra_dist_evo2
                 result[3] = ipsi_dist_evo.T @ time_marg_matrix @ ext_contra_dist_evo3
                 return result
-        
+        if not self.use_midext_evo:
+            noext_contra_dist_evo = self.noext.contra.state_dist_evo()
+            ext_contra_dist_evo = self.ext.contra.state_dist_evo()
+            if mode == "HMM":
+                result = np.empty(shape=(2, ipsi_dist_evo.shape[1], ipsi_dist_evo.shape[1]))
+                time_marg_matrix = np.diag(self.get_distribution(t_stage).pmf)
+                result[0] = ipsi_dist_evo.T @ time_marg_matrix @ noext_contra_dist_evo
+                result[1] = ipsi_dist_evo.T @ time_marg_matrix @ ext_contra_dist_evo
+                return result
         else:
             noext_contra_dist_evo, ext_contra_dist_evo = self.contra_state_dist_evo()
 
@@ -856,6 +863,14 @@ class Midline(
             ipsi_dist_evo = self.ext1.ipsi.state_dist_evo()
             for case in cases:
                 contra_dist_evo[case] = getattr(self, case).contra.state_dist_evo()
+
+        if not self.use_midext_evo:
+            cases = ["ext", "noext"]
+            ipsi_dist_evo = self.ext.ipsi.state_dist_evo()
+            contra_dist_evo = {}
+            contra_dist_evo["noext"] = self.noext.contra.state_dist_evo()
+            contra_dist_evo["ext"] = self.ext.contra.state_dist_evo()
+            
         else:
             cases = ["ext", "noext"]
             ipsi_dist_evo = self.ext.ipsi.state_dist_evo()
